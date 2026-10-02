@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MVP Canola</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; text-align: center; }
+        .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
+        .btn { padding: 12px 24px; border-radius: 8px; color: white; font-weight: bold; cursor: pointer; display: inline-block; }
+        .btn-camera { background: #007bff; }
+        .btn-gallery { background: #28a745; }
+        #status { font-weight: bold; margin-bottom: 10px; color: #555; }
+        .canvas-container { display: flex; justify-content: center; width: 100%; overflow: hidden; }
+        canvas { max-width: 100%; height: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        input[type="file"] { display: none; }
+    </style>
+</head>
+<body>
+    <h2>Análise de Sementes</h2>
+    <div id="status">Aguardando OpenCV.js...</div>
+    
+    <div class="controls">
+        <label class="btn btn-camera">
+            Câmera
+            <input type="file" accept="image/*" capture="environment" id="btnCamera" disabled>
+        </label>
+        <label class="btn btn-gallery">
+            Galeria
+            <input type="file" accept="image/*" id="btnGallery" disabled>
+        </label>
+    </div>
+
+    <img id="imageSrc" style="display:none;">
+    <div class="canvas-container">
+        <canvas id="canvasOutput"></canvas>
+    </div>
+
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
+    
+    <script>
+        let cvReady = false;
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js');
+        }
+
+        function onOpenCvReady() {
+            cvReady = true;
+            document.getElementById('status').innerText = "Sistema Pronto.";
+            document.getElementById('btnCamera').disabled = false;
+            document.getElementById('btnGallery').disabled = false;
+        }
+
+        const imgElement = document.getElementById('imageSrc');
+        const fileInputs = [document.getElementById('btnCamera'), document.getElementById('btnGallery')];
+
+        fileInputs.forEach(input => {
+            input.addEventListener('change', (e) => {
+                if (e.target.files.length > 0 && cvReady) {
+                    imgElement.src = URL.createObjectURL(e.target.files[0]);
+                    document.getElementById('status').innerText = "Processando...";
+                }
+            });
+        });
+
+        imgElement.onload = function() {
+            setTimeout(processarBandeja, 50);
+        };
+
+        function processarBandeja() {
+            let src = cv.imread(imgElement);
+            let img = new cv.Mat();
+            
+            // Força a resolução para 660x660 para bater exatamente com os passos de 60px do Python
+            cv.resize(src, img, new cv.Size(660, 660), 0, 0, cv.INTER_AREA);
+            
+            const GRID_LINHAS = 10;
+            const GRID_COLUNAS = 10;
+            const INICIO_X = 60;
+            const INICIO_Y = 60;
+            const PASSO = 60;
+            const RAIO_ANALISE = 12;
+
+            let contagem = { TOTAL_ANALISADAS: 0, VERDES: 0, AMARELAS: 0, VAZIAS: 0 };
+
+            for (let r = 0; r < GRID_LINHAS; r++) {
+                for (let c = 0; c < GRID_COLUNAS; c++) {
+                    let cx = INICIO_X + c * PASSO;
+                    let cy = INICIO_Y + r * PASSO;
+
+                    // Extrai a ROI (Recorte da cavidade)
+                    let rect = new cv.Rect(cx - RAIO_ANALISE, cy - RAIO_ANALISE, RAIO_ANALISE * 2, RAIO_ANALISE * 2);
+                    let roi = img.roi(rect);
+
+                    // Conversão RGBA -> RGB -> HSV
+                    let rgb = new cv.Mat();
+                    cv.cvtColor(roi, rgb, cv.COLOR_RGBA2RGB);
+                    let hsv = new cv.Mat();
+                    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+
+                    // Regra 1: Saturação média para identificar vazios
+                    let hsv_mean = cv.mean(hsv);
+                    let s_mean = hsv_mean[1]; 
+                    
+                    let status = "";
+                    let cor, espessura;
+
+                    if (s_mean < 40) {
+                        status = "VAZIO";
+                        contagem.VAZIAS++;
+                        cor = new cv.Scalar(200, 200, 200, 255); // Cinza
+                        espessura = 1;
+                    } else {
+                        // Regra 2: Mascara para o verde
+                        let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [35, 50, 50, 0]);
+                        let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [85, 255, 255, 0]);
+                        let mask_verde = new cv.Mat();
+                        
+                        cv.inRange(hsv, low, high, mask_verde);
+                        
+                        let area_total = (RAIO_ANALISE * 2) * (RAIO_ANALISE * 2);
+                        let pct_verde = cv.countNonZero(mask_verde) / area_total;
+
+                        if (pct_verde > 0.30) {
+                            status = "VERDE";
+                            contagem.VERDES++;
+                            cor = new cv.Scalar(255, 0, 0, 255); // Vermelho (RGBA)
+                            espessura = 2;
+                        } else {
+                            status = "AMARELO";
+                            contagem.AMARELAS++;
+                            cor = new cv.Scalar(0, 255, 0, 255); // Verde (RGBA)
+                            espessura = 2;
+                        }
+                        contagem.TOTAL_ANALISADAS++;
+
+                        mask_verde.delete(); low.delete(); high.delete();
+                    }
+
+                    // Desenha marcação na imagem principal
+                    cv.circle(img, new cv.Point(cx, cy), RAIO_ANALISE + 4, cor, espessura);
+
+                    // Limpa matrizes da iteração para não vazar memória no celular
+                    roi.delete(); rgb.delete(); hsv.delete();
+                }
+            }
+
+            // Renderiza a imagem matriz no Canvas
+            cv.imshow('canvasOutput', img);
+            src.delete(); img.delete();
+
+            // Adiciona o rodapé utilizando a API nativa do Canvas
+            renderizarRodape(contagem);
+            document.getElementById('status').innerText = "Processamento concluído.";
+        }
+
+        function renderizarRodape(totais) {
+            const canvas = document.getElementById('canvasOutput');
+            const ctx = canvas.getContext('2d');
+            
+            // Backup da imagem gerada pelo OpenCV
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            
+            // Aumenta o canvas para caber o texto
+            const margem_inferior = 180;
+            const originalHeight = canvas.height;
+            canvas.height = originalHeight + margem_inferior;
+            
+            // Restaura a imagem no topo e pinta o fundo do rodapé
+            ctx.putImageData(imgData, 0, 0);
+            ctx.fillStyle = "#282828";
+            ctx.fillRect(0, originalHeight, canvas.width, margem_inferior);
+
+            // Cálculos
+            let pct_verdes = totais.TOTAL_ANALISADAS > 0 ? ((totais.VERDES / totais.TOTAL_ANALISADAS) * 100).toFixed(2) : 0;
+            let pct_amarelas = totais.TOTAL_ANALISADAS > 0 ? ((totais.AMARELAS / totais.TOTAL_ANALISADAS) * 100).toFixed(2) : 0;
+
+            // Inserção dos Textos
+            let y_pos = originalHeight + 40;
+            
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 22px sans-serif";
+            ctx.fillText("LAUDO DE CLASSIFICACAO (CANOLA)", 30, y_pos);
+            
+            y_pos += 35;
+            ctx.font = "16px sans-serif";
+            ctx.fillText(`Analisadas: ${totais.TOTAL_ANALISADAS} sementes (Vazias ignoradas: ${totais.VAZIAS})`, 30, y_pos);
+            
+            y_pos += 35;
+            ctx.fillStyle = "#ff6b6b"; 
+            ctx.font = "bold 16px sans-serif";
+            ctx.fillText(`VERDES (Defeito): ${totais.VERDES}  ->  ${pct_verdes}%`, 30, y_pos);
+            
+            y_pos += 35;
+            ctx.fillStyle = "#4caf50"; 
+            ctx.fillText(`AMARELAS (OK)   : ${totais.AMARELAS}  ->  ${pct_amarelas}%`, 30, y_pos);
+        }
+    </script>
+</body>
+</html>
