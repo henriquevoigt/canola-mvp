@@ -73,15 +73,15 @@
             let src = cv.imread(imgElement);
             let img = new cv.Mat();
             
-            // Força a resolução para 660x660 para bater exatamente com os passos de 60px do Python
-            cv.resize(src, img, new cv.Size(660, 660), 0, 0, cv.INTER_AREA);
+            // O redimensionamento deve espelhar exatamente a saída do gerador
+            cv.resize(src, img, new cv.Size(700, 700), 0, 0, cv.INTER_AREA);
             
             const GRID_LINHAS = 10;
             const GRID_COLUNAS = 10;
             const INICIO_X = 60;
             const INICIO_Y = 60;
             const PASSO = 60;
-            const RAIO_ANALISE = 12;
+            const RAIO_ANALISE = 15; // 15px garante leitura apenas do miolo, ignorando as bordas do raio de 18px
 
             let contagem = { TOTAL_ANALISADAS: 0, VERDES: 0, AMARELAS: 0, VAZIAS: 0 };
 
@@ -90,30 +90,27 @@
                     let cx = INICIO_X + c * PASSO;
                     let cy = INICIO_Y + r * PASSO;
 
-                    // Extrai a ROI (Recorte da cavidade)
                     let rect = new cv.Rect(cx - RAIO_ANALISE, cy - RAIO_ANALISE, RAIO_ANALISE * 2, RAIO_ANALISE * 2);
                     let roi = img.roi(rect);
 
-                    // Conversão RGBA -> RGB -> HSV
                     let rgb = new cv.Mat();
                     cv.cvtColor(roi, rgb, cv.COLOR_RGBA2RGB);
                     let hsv = new cv.Mat();
                     cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
 
-                    // Regra 1: Saturação média para identificar vazios
                     let hsv_mean = cv.mean(hsv);
                     let s_mean = hsv_mean[1]; 
                     
                     let status = "";
                     let cor, espessura;
 
+                    // Ajuste de limiar para a saturação do seu gerador (fundo branco vs óleo gerado)
                     if (s_mean < 40) {
                         status = "VAZIO";
                         contagem.VAZIAS++;
-                        cor = new cv.Scalar(200, 200, 200, 255); // Cinza
+                        cor = new cv.Scalar(200, 200, 200, 255); 
                         espessura = 1;
                     } else {
-                        // Regra 2: Mascara para o verde
                         let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [35, 50, 50, 0]);
                         let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [85, 255, 255, 0]);
                         let mask_verde = new cv.Mat();
@@ -126,12 +123,12 @@
                         if (pct_verde > 0.30) {
                             status = "VERDE";
                             contagem.VERDES++;
-                            cor = new cv.Scalar(255, 0, 0, 255); // Vermelho (RGBA)
+                            cor = new cv.Scalar(255, 0, 0, 255); 
                             espessura = 2;
                         } else {
                             status = "AMARELO";
                             contagem.AMARELAS++;
-                            cor = new cv.Scalar(0, 255, 0, 255); // Verde (RGBA)
+                            cor = new cv.Scalar(0, 255, 0, 255); 
                             espessura = 2;
                         }
                         contagem.TOTAL_ANALISADAS++;
@@ -139,19 +136,15 @@
                         mask_verde.delete(); low.delete(); high.delete();
                     }
 
-                    // Desenha marcação na imagem principal
                     cv.circle(img, new cv.Point(cx, cy), RAIO_ANALISE + 4, cor, espessura);
 
-                    // Limpa matrizes da iteração para não vazar memória no celular
                     roi.delete(); rgb.delete(); hsv.delete();
                 }
             }
 
-            // Renderiza a imagem matriz no Canvas
             cv.imshow('canvasOutput', img);
             src.delete(); img.delete();
 
-            // Adiciona o rodapé utilizando a API nativa do Canvas
             renderizarRodape(contagem);
             document.getElementById('status').innerText = "Processamento concluído.";
         }
